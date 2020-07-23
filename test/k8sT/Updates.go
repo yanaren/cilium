@@ -142,6 +142,9 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 	var (
 		privateIface string // only used when running w/o kube-proxy
 		err          error
+		exitCode     int
+		apps         = []string{helpers.App1, helpers.App2, helpers.App3}
+		app1Service  = "app1-service"
 	)
 
 	canRun, err := helpers.CanRunK8sVersion(oldImageVersion, helpers.GetCurrentK8SEnv())
@@ -159,9 +162,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		privateIface, err = kubectl.GetPrivateIface()
 		ExpectWithOffset(1, err).To(BeNil(), "Unable to determine private iface")
 	}
-
-	apps := []string{helpers.App1, helpers.App2, helpers.App3}
-	app1Service := "app1-service"
 
 	cleanupCiliumState := func(helmPath, chartVersion, imageName, imageTag, registry string) {
 		removeCilium(kubectl)
@@ -229,6 +229,14 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		// make sure we clean everything up before doing any other test
 		cleanupCiliumState(filepath.Join(kubectl.BasePath(), helpers.HelmTemplate), newHelmChartVersion, "", newImageVersion, "")
 	}
+
+	appPods := helpers.GetAppPods(apps, helpers.DefaultNamespace, kubectl, "id")
+	go func() {
+		res := kubectl.ExecPodCmd(
+			helpers.DefaultNamespace, appPods[helpers.App2],
+			helpers.NetcatNoTimeout(app1Service))
+		exitCode = res.GetExitCode()
+	}()
 
 	testfunc := func() {
 		By("Deleting Cilium and CoreDNS...")
@@ -546,6 +554,8 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		nbMissedTailCalls, err = kubectl.CountMissedTailCalls()
 		ExpectWithOffset(1, err).Should(BeNil(), "Failed to retrieve number of missed tail calls")
 		ExpectWithOffset(1, nbMissedTailCalls).To(BeNumerically("==", 0))
+
+		Expect(exitCode).Should(Equal(0), "tcp connection died in reload")
 	}
 	return testfunc, cleanupCallback
 }

@@ -30,6 +30,7 @@ const (
 	TCP    U8proto = 6
 	UDP    U8proto = 17
 	ICMPv6 U8proto = 58
+	SCTP   U8proto = 132
 )
 
 var protoNames = map[U8proto]string{
@@ -62,5 +63,13 @@ func ParseProtocol(proto string) (U8proto, error) {
 	if u, ok := ProtoIDs[strings.ToLower(proto)]; ok {
 		return u, nil
 	}
-	return 0, fmt.Errorf("unknown protocol '%s'", proto)
+	return 0, fmt.Errorf("unknown protocol %q", proto)
+}
+
+func FromNumber(proto uint8) (U8proto, error) {
+	_, ok := protoNames[U8proto(proto)]
+	if !ok {
+		return 0, fmt.Errorf("unknown protocol %d", proto)
+	}
+	return U8proto(proto), nil
 }
