@@ -201,14 +201,9 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 	specialIdentities := []identity.IPIdentityPair{}
 
 	if option.Config.EnableIPv4 {
-		addrs, err := d.datapath.LocalNodeAddressing().IPv4().LocalAddresses()
-		if err != nil {
-			log.WithError(err).Warning("Unable to list local IPv4 addresses")
-		}
-
-		for _, ip := range addrs {
+		err := d.datapath.LocalNodeAddressing().IPv4().MapLocalAddresses(func(ip net.IP) error {
 			if option.Config.IsExcludedLocalAddress(ip) {
-				continue
+				return nil
 			}
 
 			if len(ip) > 0 {
@@ -218,6 +213,10 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 						ID: identity.ReservedIdentityHost,
 					})
 			}
+			return nil
+		})
+		if err != nil {
+			log.WithError(err).Warning("Unable to map over local IPv4 addresses")
 		}
 
 		specialIdentities = append(specialIdentities,
@@ -229,15 +228,9 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 	}
 
 	if option.Config.EnableIPv6 {
-		addrs, err := d.datapath.LocalNodeAddressing().IPv6().LocalAddresses()
-		if err != nil {
-			log.WithError(err).Warning("Unable to list local IPv4 addresses")
-		}
-
-		addrs = append(addrs, node.GetIPv6Router())
-		for _, ip := range addrs {
+		f := func(ip net.IP) error {
 			if option.Config.IsExcludedLocalAddress(ip) {
-				continue
+				return nil
 			}
 
 			if len(ip) > 0 {
@@ -247,6 +240,12 @@ func (d *Daemon) syncEndpointsAndHostIPs() error {
 						ID: identity.ReservedIdentityHost,
 					})
 			}
+			return nil
+		}
+		f(node.GetIPv6Router())
+		err := d.datapath.LocalNodeAddressing().IPv6().MapLocalAddresses(f)
+		if err != nil {
+			log.WithError(err).Warning("Unable to list local IPv4 addresses")
 		}
 
 		specialIdentities = append(specialIdentities,

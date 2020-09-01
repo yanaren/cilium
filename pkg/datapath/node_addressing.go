@@ -36,8 +36,8 @@ type NodeAddressingFamily interface {
 	// on the node
 	AllocationCIDR() *cidr.CIDR
 
-	// LocalAddresses lists all local addresses
-	LocalAddresses() ([]net.IP, error)
+	// MapLocalAddresses lists all local addresses
+	MapLocalAddresses(func(net.IP) error) error
 
 	// LoadBalancerNodeAddresses lists all addresses on which HostPort and
 	// NodePort services should be responded to
