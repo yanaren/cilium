@@ -672,18 +672,22 @@ var _ = Describe("K8sServicesTest", func() {
 			), "Failed to account for IPv4 fragments to %s (out)", dstIP)
 		}
 
-		getIPv4Andv6AddrForIface := func(nodeName, iface string) (string, string) {
+		getIPv4AddrForIface := func(nodeName, iface string) string {
 			cmd := fmt.Sprintf("ip -4 -o a s dev %s scope global | awk '{print $4}' | cut -d/ -f1", iface)
 			res := kubectl.ExecInHostNetNS(context.TODO(), nodeName, cmd)
 			res.ExpectSuccess(cmd)
 			ipv4 := strings.Trim(res.Stdout(), "\n")
 
-			cmd = fmt.Sprintf("ip -6 -o a s dev %s scope global | awk '{print $4}' | cut -d/ -f1", iface)
-			res = kubectl.ExecInHostNetNS(context.TODO(), nodeName, cmd)
+			return ipv4
+		}
+
+		getIPv6AddrForIface := func(nodeName, iface string) string {
+			cmd := fmt.Sprintf("ip -6 -o a s dev %s scope global | awk '{print $4}' | cut -d/ -f1", iface)
+			res := kubectl.ExecInHostNetNS(context.TODO(), nodeName, cmd)
 			res.ExpectSuccess(cmd)
 			ipv6 := strings.Trim(res.Stdout(), "\n")
 
-			return ipv4, ipv6
+			return ipv6
 		}
 
 		testNodePort := func(bpfNodePort, testSecondaryNodePortIP, testFromOutside bool, fails int) {
@@ -740,8 +744,8 @@ var _ = Describe("K8sServicesTest", func() {
 			}
 
 			if testSecondaryNodePortIP {
-				secondaryK8s1IPv4, _ = getIPv4Andv6AddrForIface(k8s1NodeName, helpers.SecondaryIface)
-				secondaryK8s2IPv4, _ = getIPv4Andv6AddrForIface(k8s2NodeName, helpers.SecondaryIface)
+				secondaryK8s1IPv4 = getIPv4AddrForIface(k8s1NodeName, helpers.SecondaryIface)
+				secondaryK8s2IPv4 = getIPv4AddrForIface(k8s2NodeName, helpers.SecondaryIface)
 
 				testURLsFromHosts = append(testURLsFromHosts, []string{
 					getHTTPLink(secondaryK8s1IPv4, data.Spec.Ports[0].NodePort),
@@ -826,6 +830,71 @@ var _ = Describe("K8sServicesTest", func() {
 				tftpURL = getTFTPLink("::ffff:127.0.0.1", data.Spec.Ports[1].NodePort)
 				testCurlFromPodsFail(testDSClient, httpURL)
 				testCurlFromPodsFail(testDSClient, tftpURL)
+			}
+
+			wg.Wait()
+		}
+
+		// This function tests NodePort srvices using IPV6 addresses
+		// It is the job of the caller to make sure that all the node have assigned
+		// routable IPV6 addresses reachable from other nodes.
+		testNodePortIPv6 := func(testFromOutside bool, nodeportService v1.Service) {
+			iface, err := kubectl.GetDefaultIface()
+			Expect(err).To(BeNil(), "Error getting default interface for test env")
+
+			var (
+				outIPv6 string
+				wg      sync.WaitGroup
+			)
+
+			if testFromOutside {
+				outIPv6 = getIPv6AddrForIface(outsideNodeName, iface)
+				Expect(outIPv6).ToNot(Equal(""), "Cannot get IPv6 address outside node.")
+			}
+			k8s1IPv6 := getIPv6AddrForIface(k8s1NodeName, iface)
+			k8s2IPv6 := getIPv6AddrForIface(k8s2NodeName, iface)
+
+			Expect(k8s1IPv6).ToNot(Equal(""), "Cannot get IPv6 address for K8s1 node")
+			Expect(k8s2IPv6).ToNot(Equal(""), "Cannot get IPv6 address for K8s2 node")
+
+			testURLs := []string{
+				getHTTPLink(k8s1IPv6, nodeportService.Spec.Ports[0].NodePort),
+				getTFTPLink(k8s1IPv6, nodeportService.Spec.Ports[1].NodePort),
+
+				getHTTPLink(k8s2IPv6, nodeportService.Spec.Ports[0].NodePort),
+				getTFTPLink(k8s2IPv6, nodeportService.Spec.Ports[1].NodePort),
+			}
+
+			count := 10
+			for _, url := range testURLs {
+				wg.Add(1)
+				go func(url string) {
+					defer GinkgoRecover()
+					defer wg.Done()
+					testCurlFromPods(testDSClient, url, count, 0)
+				}(url)
+			}
+
+			for _, url := range testURLs {
+				wg.Add(1)
+				go func(url string) {
+					defer GinkgoRecover()
+					defer wg.Done()
+					testCurlFromPodInHostNetNS(url, count, 0, k8s1NodeName)
+					testCurlFromPodInHostNetNS(url, count, 0, k8s2NodeName)
+				}(url)
+			}
+
+			// Test IPv6 NodePort service connectivity from outside of K8s cluster.
+			if testFromOutside {
+				for _, url := range testURLs {
+					wg.Add(1)
+					go func(url string) {
+						defer GinkgoRecover()
+						defer wg.Done()
+						testCurlFromOutside(url, count, false)
+					}(url)
+				}
 			}
 
 			wg.Wait()
@@ -1275,6 +1344,35 @@ var _ = Describe("K8sServicesTest", func() {
 				"global.hostFirewall": "false",
 			})
 			testExternalTrafficPolicyLocal()
+		})
+
+		// IPv6 tests do not work on Integrations like GKE as we don't have IPv6
+		// addresses assigned to nodes in those environments.
+		SkipContextIf(func() bool {
+			return helpers.RunsWithKubeProxy() || helpers.GetCurrentIntegration() != ""
+		}, "Tests IPv6 NodePort Services", func() {
+			testDSIPv6 := "fd03::310"
+			var data v1.Service
+
+			BeforeAll(func() {
+				err := kubectl.Get(helpers.DefaultNamespace, "service test-nodeport").Unmarshal(&data)
+				ExpectWithOffset(1, err).Should(BeNil(), "Can not retrieve test-nodeport service")
+
+				// Install rules for testds-service NodePort Service(demo_ds.yaml)
+				httpBackends := ciliumIPv6Backends("-l k8s:zgroup=testDS,k8s:io.kubernetes.pod.namespace=default", "80")
+				ciliumAddService(31080, net.JoinHostPort(testDSIPv6, fmt.Sprintf("%d", data.Spec.Ports[0].NodePort)), httpBackends, "NodePort", "Cluster")
+				tftpBackends := ciliumIPv6Backends("-l k8s:zgroup=testDS,k8s:io.kubernetes.pod.namespace=default", "69")
+				ciliumAddService(31069, net.JoinHostPort(testDSIPv6, fmt.Sprintf("%d", data.Spec.Ports[0].NodePort)), tftpBackends, "NodePort", "Cluster")
+			})
+
+			AfterAll(func() {
+				ciliumDelService(31080)
+				ciliumDelService(31069)
+			})
+
+			It("Test IPv6 connectivity to NodePort service", func() {
+				testNodePortIPv6(helpers.DoesNotExistNodeWithoutCilium(), data)
+			})
 		})
 
 		Context("TFTP with DNS Proxy port collision", func() {
