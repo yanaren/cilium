@@ -38,8 +38,8 @@ the release of version ``v1.3.0``:
 - Major bugfixes relevant to the correct operation of Cilium
 
 
-Backporting guide
------------------
+Backporting guide for the backporter
+------------------------------------
 
 Cilium PRs that are marked with the label ``needs-backport/X.Y`` need to be
 backported to the stable branch ``X.Y``. The following steps summarize the
@@ -140,6 +140,13 @@ Creating the backports branch
       ...
       $ contrib/backporting/cherry-pick <newest-commit-sha>
 
+   Conflicts may be resolved by applying changes or preferably backporting other
+   PRs to completely avoid them. What is the PR that merged a commit into the
+   master branch can be found via the github UI by inspecting the commit (see `this
+   stackoverflow.com question
+   <https://stackoverflow.com/questions/17818167/find-a-pull-request-on-github-where-a-commit-was-originally-created>`_
+   for more details).
+
 #. (Optional) If there are any commits or pull requests that are tricky or
    time-consuming to backport, consider reaching out for help on Slack. If the
    commit does not cherry-pick cleanly, please mention the necessary changes in
@@ -209,3 +216,24 @@ listed in the pull request description.
 .. code-block:: bash
 
    $ for pr in 12589 12568; do contrib/backporting/set-labels.py $pr done 1.8; done
+
+Backporting guide for the original committer
+--------------------------------------------
+
+Mark your PRs needing backport as ``needs-backport/X.Y``.  At some point, your
+changes will be picked up on a backport PR and you will be notified and asked to
+approve the backport commits.  Please check:
+
+#. That all the commits from your PR have been indeed backported.
+#. In case of conflicts, the resulting changes look good.
+
+
+Backporting guide for the merger
+--------------------------------
+
+When merging a backport PR, please set the labels of the backported PRs to
+``done``. Typically, backport PRs include a line on how do that. E.g.,:
+
+.. code-block:: bash
+
+    $ for pr in 12894 12621 12973 12977 12952; do contrib/backporting/set-labels.py $pr done 1.8; done
